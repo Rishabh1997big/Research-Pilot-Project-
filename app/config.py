@@ -21,13 +21,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ROOT_DIR / ".env", env_file_encoding="utf-8", extra="ignore")
 
     # LLM
-    llm_provider: Literal["groq", "gemini", "ollama"] = "groq"
+    llm_provider: Literal["groq", "gemini"] = "groq"
     groq_api_key: str = ""
     groq_model: str = ""
     gemini_api_key: str = ""
     gemini_model: str = ""
-    ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = ""
 
     # Search
     search_provider: Literal["ddgs", "tavily"] = "ddgs"
@@ -37,6 +35,8 @@ class Settings(BaseSettings):
     langsmith_tracing: bool = False
     langsmith_api_key: str = ""
     langsmith_project: str = "researchpilot"
+    # Tag on every trace, so runs of different system versions (e.g. v1 without verifier, v2 with) can be compared
+    run_version: str = "v1"
 
     # Storage
     embedding_model: str = "BAAI/bge-small-en-v1.5"
