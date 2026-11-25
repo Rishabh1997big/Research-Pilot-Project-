@@ -5,6 +5,38 @@ Owner: Rishabh (T30)
 ## Overview
 ## Research agent graph
 ## State design
+
+Code: `app/agents/research/state.py`.
+
+| Key | Type | Reducer | Purpose |
+|---|---|---|---|
+| `topic` | str | replace | The user's topic |
+| `section_order` | list of section IDs | replace | Outline order; the report has exactly these sections |
+| `sections` | dict: section ID to `Section` | merge by ID, None removes | Each section with its own queries, passages, sources, draft, citations, status |
+| `sources` | dict: source ID to `Source` | merge by ID | Source registry (`S1`, `S2`...): URL, title, domain |
+| `outline_approved` | bool | replace | Set when the user approves the outline |
+| `feedback` | list of `Feedback` | replace | Change requests with their kind and target sections |
+| `sections_to_run` | list of section IDs | replace | Sections the next search, write and verify pass works on |
+| `report` | str | replace | Final Markdown with numbered citations and references |
+| `metrics` | `RunMetrics` | sum | LLM calls, search calls, pages fetched, tokens |
+
+A `Section` holds `id`, `title`, `subtopics`, `queries`, `passages` (each tied to a source ID), `source_ids`,
+`draft` (with inline `[S#]` citations), `citations` (claim, source IDs, verifier result), `status`
+(planned, researching, drafted, verified, needs_revision) and `revision`.
+
+Why it looks like this:
+
+- **Section-level editing.** Everything a section needs is inside the section, so a change request re-runs only the
+  sections in `sections_to_run` and leaves the rest as they are.
+- **Citations from the start.** A passage is stored with its source ID when the page is read. The writer only sees
+  passages with IDs, so every claim it writes can point at a source, and the verifier can check that source.
+- **Parallel sections.** Sections are researched in parallel branches. The merge-by-ID reducer lets each branch
+  return only its own section, and the metrics reducer adds up the counts from all branches.
+- **Checkpoint-safe.** The state is plain dicts and lists, so the SQLite checkpointer saves and restores it for the
+  outline approval pause without any custom serialisation. Pydantic is used only for LLM structured output.
+- **Source IDs are assigned in one sequential step**, never in parallel branches, so two sections cannot hand out
+  the same ID.
+
 ## Human-in-the-loop and checkpointing
 ## Analysis agent (and why it is a separate graph)
 ## Knowledge base and chatbot
