@@ -2,6 +2,7 @@ import random
 
 from langchain_core.runnables import RunnableLambda
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.types import Command
 
 from app.agents.research import graph as graph_module
 from app.agents.research.nodes import planner as planner_module
@@ -287,7 +288,7 @@ def test_read_node_keeps_a_section_with_no_readable_pages(monkeypatch):
 # ---- the graph so far: plan -> search -> read ----
 
 
-def test_graph_plans_searches_and_reads_with_a_checkpointer(monkeypatch):
+def test_graph_plans_waits_for_approval_then_searches_and_reads(monkeypatch):
     plan = Outline(
         sections=[
             SectionPlan(title="Sales and growth", subtopics=["scooter sales"], queries=["scooter sales India"]),
@@ -311,7 +312,8 @@ def test_graph_plans_searches_and_reads_with_a_checkpointer(monkeypatch):
     with SqliteSaver.from_conn_string(":memory:") as saver:
         graph = graph_module.build_research_graph(checkpointer=saver)
         config = {"configurable": {"thread_id": "t"}}
-        graph.invoke(initial_state("Electric scooters in India"), config)
+        graph.invoke(initial_state("Electric scooters in India"), config)  # stops at approve_outline (T11)
+        graph.invoke(Command(resume={"sections": None}), config)  # approve the outline as planned
         saved = graph.get_state(config).values
 
     sections = ordered_sections(saved)
