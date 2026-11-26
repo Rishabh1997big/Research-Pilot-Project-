@@ -31,7 +31,7 @@ Then fill in `.env`:
 | `GROQ_API_KEY` | <https://console.groq.com/keys> |
 | `GEMINI_API_KEY` | <https://aistudio.google.com/apikey> |
 | `LANGSMITH_API_KEY` | <https://smith.langchain.com> (Settings, API Keys) |
-| `TAVILY_API_KEY` | Optional, only if `SEARCH_PROVIDER=tavily` |
+| `TAVILY_API_KEY` | <https://app.tavily.com> (optional, but recommended: free search engines often rate-limit, and Tavily then takes over) |
 
 `LLM_PROVIDER` and `SEARCH_PROVIDER` switch providers without code changes. Embeddings run locally and need no key.
 

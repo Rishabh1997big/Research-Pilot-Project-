@@ -71,3 +71,8 @@ In every case only the listed sections are put in `sections_to_run`, and `revisi
   `RunMetrics` shape.
 - **Traces tagged by version** (`app/observability.py`). Every run carries module, `RUN_VERSION` and topic tags, so
   v1 and v2 runs can be compared side by side in LangSmith.
+- **Search: ddgs first, Tavily as fallback, results cached** (`app/tools/search.py`). Free engines push back on
+  automated traffic: DuckDuckGo alone returned nothing (HTTP 202), others answered 403 or timed out, and a ddgs
+  query took 10 to 50 seconds. With a fallback, ddgs gets one attempt and Tavily (about 3 seconds per query) takes
+  over. Results are cached on disk, so the v1 and v2 evaluation runs see the same sources; that keeps the comparison
+  fair and saves rate limits.

@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     # Search
     search_provider: Literal["ddgs", "tavily"] = "ddgs"
     tavily_api_key: str = ""
+    # Keep search results on disk, so re-runs and v1/v2 evaluation reuse them instead of hitting rate limits again
+    search_cache: bool = True
+    search_cache_dir: Path = Path("data/search_cache")
 
     # LangSmith
     langsmith_tracing: bool = False
@@ -46,7 +49,7 @@ class Settings(BaseSettings):
     # App
     api_base_url: str = "http://localhost:8000"
 
-    @field_validator("chroma_dir", "checkpoint_db")
+    @field_validator("chroma_dir", "checkpoint_db", "search_cache_dir")
     @classmethod
     def _relative_to_project_root(cls, value: Path) -> Path:
         # Relative paths in .env are taken from the project root, not from wherever the command was run.
