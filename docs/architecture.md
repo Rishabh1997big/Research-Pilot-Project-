@@ -15,8 +15,8 @@ graph LR
 | Node | Code | What it does |
 |---|---|---|
 | `plan` | `nodes/planner.py` (T06) | Topic to 3 to 6 sections, each with subtopics and up to 3 search queries |
-| `search` | `nodes/sources.py` (T07) | Runs each section's queries (sections in parallel threads) and picks up to 8 candidate pages per section: the queries' results in turn, at most 2 per site, no PDFs, no social media |
-| `read` | `nodes/sources.py` (T07) | Reads every candidate page once (8 at a time), skips unusable and paid pages, picks each section's most relevant passages, registers the pages that were read as `S1`, `S2`… and attaches every passage with its source ID |
+| `search` | `nodes/sources.py` (T07) | Runs each section's queries (sections in parallel threads) and picks up to 8 candidate pages per section: the queries' results in turn, at most 2 per site, no social media |
+| `read` | `nodes/sources.py` (T07), `tools/reader.py` (T08) | Reads every candidate web page or PDF once (8 at a time), skips unusable and paid pages, picks each section's most relevant passages, registers the pages that were read as `S1`, `S2`… and attaches every passage with its source ID |
 
 On a real topic, `plan → search → read` takes about 30 to 40 seconds: 1 LLM call, up to 18 searches, about 30 pages
 read, and 12 passages (about 10,000 characters) per section from 20 to 25 different sites.
@@ -115,4 +115,13 @@ In every case only the listed sections are put in `sections_to_run`, and `revisi
 - **Passages are picked with BM25 keyword scoring** against each section's title, subtopics and queries: no model
   download, fast, and the same result every time. Embeddings (already used by the knowledge base) could replace it
   if passage quality turns out to limit the writer.
-- **Known gap: Wikipedia** answers 403 to clients whose User-Agent has no contact details, so its pages are skipped.
+- **The reader reads PDFs too** (`tools/reader.py`, pypdf). On 153 real search results, PDFs were half of the
+  pages it could not read, and often the best sources (IIM Ahmedabad and IIM Bangalore research papers, law journals).
+  With PDF support, 88% of pages are read instead of 73%. PDF lines are joined into paragraphs, because pypdf breaks
+  every printed line, in one paper after every word.
+- **Pages are cached like search results** (`data/page_cache`), so the v1 and v2 runs read exactly the same text.
+  Pages that can never be used (404, blocked, too short) are cached as skipped; temporary failures (timeouts, 429,
+  5xx) are retried next time. A cached skip is retried when the reader improves or its User-Agent changes.
+- **Sites that block us are respected.** A 403 or 429 means skip the page, never work around it. With
+  `READER_CONTACT` set, the reader names the project and a contact in its User-Agent; Wikipedia requires this and
+  answers 403 otherwise. Without it the reader uses a common browser User-Agent and Wikipedia pages are skipped.
