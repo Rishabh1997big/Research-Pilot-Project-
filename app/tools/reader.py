@@ -7,7 +7,7 @@
 
 HTML goes through trafilatura (main text, no menus or ads). PDFs, often the best sources (research papers, government
 reports), go through pypdf: the first MAX_PDF_PAGES pages, with lines joined into paragraphs and words split by a
-hyphen at a line end put back together.
+hyphen at a line end put back together (see tidy_pdf_text for how "electri-/city" and "two-/wheeler" are told apart).
 
 A page is skipped (None) when it cannot be fetched (timeouts, 403 blocks, closed connections), is neither HTML nor
 PDF, is too large, or has less than MIN_CHARS of text. In testing, short texts came from paywalls and pages that hide
@@ -65,6 +65,8 @@ BROWSER_USER_AGENT = (
 )
 # Titles that are only a file name, e.g. "Q-com - Ranjekar & Roy.docx" (seen in testing)
 FILE_NAME_TITLE = re.compile(r"(\.(docx?|pdf|pptx?|xlsx?)\s*$)|(^microsoft (word|powerpoint) -)", re.IGNORECASE)
+LINE_END_HYPHEN = re.compile(r"(\w+)-\n(\w+)")  # "electri-\ncity", "two-\nwheeler"
+WORD_CHARS = re.compile(r"\w+")
 
 
 class Page(TypedDict):
@@ -171,9 +173,22 @@ def _pdf_text(body: bytes) -> tuple[str, str]:
 
 
 def tidy_pdf_text(text: str) -> str:
-    """PDF text as one paragraph per line: words split by a hyphen at a line end are joined, and single line breaks
-    (pypdf breaks every printed line, sometimes after every word) become spaces. Blank lines separate paragraphs."""
-    text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
+    """PDF text as one paragraph per line: single line breaks (pypdf breaks every printed line, sometimes after every
+    word) become spaces, and blank lines separate paragraphs.
+
+    A hyphen at a line end is either a word split to fit the line ("electri-/city") or a real hyphen that happened to
+    fall there ("two-/wheeler", "well-/known"). Without a dictionary the two look the same, so the document decides:
+    the parts are joined only when the joined word appears elsewhere in the same text ("electricity"). Otherwise the
+    hyphen is kept, because a kept hyphen loses nothing that was printed, while a wrong join ("twowheeler") breaks
+    the word for passage matching.
+    """
+    words = set(WORD_CHARS.findall(text.lower()))
+
+    def rejoin(match: re.Match[str]) -> str:
+        left, right = match.groups()
+        return left + right if (left + right).lower() in words else f"{left}-{right}"
+
+    text = LINE_END_HYPHEN.sub(rejoin, text)
     paragraphs = (" ".join(block.split()) for block in re.split(r"\n\s*\n", text))
     return "\n".join(p for p in paragraphs if p)
 

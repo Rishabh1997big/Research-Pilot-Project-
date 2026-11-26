@@ -225,6 +225,7 @@ PDF_LINES = [
     "and the leading platforms raised fresh funding to expand into smaller towns.",
     "Demand for groceries and daily essentials drove most orders, while electri-",
     "city and logistics costs remained a large share of operating expenses.",
+    "Cheaper electricity let dark stores run cold storage for longer hours.",  # so "electri-/city" is a split word
 ] + [f"Finding {n}: delivery times stayed under fifteen minutes in {n + 4} major metro areas." for n in range(6)]
 
 
@@ -269,9 +270,9 @@ def test_broken_and_oversized_pdfs_are_skipped(monkeypatch):
 
 
 def test_tidy_pdf_text():
-    raw = "Rise\nof\nQuick\nCommerce\n\nelectri-\ncity  costs\n\n\n"
+    raw = "Rise\nof\nQuick\nCommerce\n\nelectri-\ncity  costs\n\nelectricity prices\n\n\n"
 
-    assert reader.tidy_pdf_text(raw) == "Rise of Quick Commerce\nelectricity costs"
+    assert reader.tidy_pdf_text(raw) == "Rise of Quick Commerce\nelectricity costs\nelectricity prices"
 
 
 # ---- who we say we are ----
@@ -502,7 +503,12 @@ def test_only_the_first_max_pdf_pages_are_read(monkeypatch):
 @pytest.mark.parametrize(
     ("raw", "tidy"),
     [
-        ("well-\nknown", "wellknown"),
+        ("well-\nknown", "well-known"),  # a real hyphen at a line end is kept
+        ("electric two-\nwheeler sales", "electric two-wheeler sales"),
+        ("state-of-the-\nart", "state-of-the-art"),
+        ("2023-\n24 figures", "2023-24 figures"),  # a year range is not one number
+        ("electri-\ncity costs. Electricity prices", "electricity costs. Electricity prices"),  # case is ignored
+        ("electri-\ncity costs", "electri-city costs"),  # no sign of "electricity": keep what was printed
         ("pre- \npost", "pre- post"),  # a hyphen followed by a space is a dash, not a split word
         ("", ""),
         ("  \n\n  \n", ""),
@@ -510,6 +516,17 @@ def test_only_the_first_max_pdf_pages_are_read(monkeypatch):
 )
 def test_tidy_pdf_text_edge_cases(raw, tidy):
     assert reader.tidy_pdf_text(raw) == tidy
+
+
+def test_a_hyphenated_word_split_across_pdf_lines_keeps_its_hyphen():
+    url = "https://a.org/ev.pdf"
+    lines = ["Sales of the electric two-", "wheeler grew fast, and well-", "known makers expanded."] + PDF_LINES
+
+    page = read_page(url, client_for({url: pdf_response(make_pdf(lines))}))
+
+    assert page is not None
+    assert "electric two-wheeler grew fast, and well-known makers" in page["text"]
+    assert "electricity and logistics costs" in page["text"]  # the split word in the same PDF is still joined
 
 
 # ---- T13: cache files ----

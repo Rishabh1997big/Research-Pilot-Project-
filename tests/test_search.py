@@ -1,6 +1,8 @@
 import logging
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -401,6 +403,32 @@ def test_a_failed_cache_write_does_not_lose_the_results(monkeypatch, cfg, caplog
 
     assert [r["url"] for r in batch.results] == ["https://a.org"]
     assert "Could not cache search results" in caplog.text
+
+
+def test_two_threads_caching_the_same_query_use_their_own_temporary_files(monkeypatch, cfg, caplog):
+    """Two sections that search the same query at the same moment both write its cache file."""
+    both_writing = threading.Barrier(2, timeout=5)
+    temporary_files: list[str] = []
+    write_text = Path.write_text
+
+    def write_text_together(self, *args, **kwargs):
+        temporary_files.append(self.name)
+        both_writing.wait()  # neither thread moves its file into place before the other has written
+        return write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", write_text_together)
+    results = [{"url": "https://a.org", "title": "", "snippet": "", "query": "q", "provider": "ddgs"}]
+
+    with caplog.at_level(logging.WARNING, logger="app.tools.search"):
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(search._cache_put, "q", 5, results, cfg) for _ in range(2)]
+            for future in futures:
+                future.result(timeout=10)  # re-raises any error from a worker thread
+
+    assert len(set(temporary_files)) == 2
+    assert "Could not cache" not in caplog.text
+    assert [p.suffix for p in cfg.search_cache_dir.iterdir()] == [".json"]  # no temporary file left behind
+    assert search._cache_get("q", 5, cfg) == results
 
 
 # ---- T13: spacing, backoff and one ddgs request at a time ----
