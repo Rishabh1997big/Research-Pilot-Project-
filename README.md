@@ -32,6 +32,7 @@ Then fill in `.env`:
 | `GEMINI_API_KEY` | <https://aistudio.google.com/apikey> |
 | `LANGSMITH_API_KEY` | <https://smith.langchain.com> (Settings, API Keys) |
 | `TAVILY_API_KEY` | <https://app.tavily.com> (optional, but recommended: free search engines often rate-limit, and Tavily then takes over) |
+| `READER_CONTACT` | Optional: an email or project URL the page reader sends so sites know who reads them. Wikipedia blocks readers without one. |
 
 `LLM_PROVIDER` and `SEARCH_PROVIDER` switch providers without code changes. Embeddings run locally and need no key.
 
