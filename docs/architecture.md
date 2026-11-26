@@ -78,6 +78,32 @@ In every case only the listed sections are put in `sections_to_run`, and `revisi
 ## Human-in-the-loop and checkpointing
 ## Analysis agent (and why it is a separate graph)
 ## Knowledge base and chatbot
+
+Code: `app/kb/ingest.py` (T09). The chatbot (T14, T19, T20) follows.
+
+- **Input is the research state, not the Markdown report.** The state already knows which section each paragraph
+  belongs to and which sources it cites, so nothing has to be parsed back out of the compiled report.
+- **One Chroma collection per report.** A chunk is one or more whole paragraphs of one section's draft (at most
+  900 characters), so every answer can name its section. The embedded text starts with the section title.
+- **Metadata per chunk:** section ID, title and position, chunk index, and the source IDs and URLs the chunk cites.
+  Chroma accepts lists, so the chatbot can filter by source (`{"source_ids": {"$contains": "S4"}}`).
+- **Section-level updates.** Re-ingesting a section deletes and re-embeds only that section's chunks, matching the
+  section-level change requests. A full ingest also removes sections that left the report.
+- **Embeddings run locally:** BGE-small (`BAAI/bge-small-en-v1.5`) through fastembed (ONNX), downloaded once to
+  `data/models` (65 MB). Loading takes about 3 seconds; a search about 0.04 seconds. Questions get BAAI's retrieval
+  instruction, passages do not. Chroma's anonymous telemetry is switched off.
+
+Cosine distances on the sample report, for "I don't know" handling (T19):
+
+| Question | Distance to the nearest chunk |
+|---|---|
+| Answered by the report ("What is a dark store?", "Do delivery partners get welfare benefits?") | 0.22 to 0.30 |
+| Close to the topic but not answered ("What was Alpha's revenue last year?") | 0.43 |
+| Unrelated ("What is the capital of France?", "How do I bake bread?") | 0.59 to 0.63 |
+
+A distance threshold near 0.5 catches unrelated questions, but not questions close to the topic that the report
+does not answer. Those need the prompt rule as well (answer only from the retrieved chunks, otherwise say so).
+
 ## Key decisions and trade-offs
 
 - **Swappable LLM providers** (`app/llm/provider.py`). Groq or Gemini is chosen by `LLM_PROVIDER`. When both have
