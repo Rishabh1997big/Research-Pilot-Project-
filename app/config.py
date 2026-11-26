@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     # Keep search results on disk, so re-runs and v1/v2 evaluation reuse them instead of hitting rate limits again
     search_cache: bool = True
     search_cache_dir: Path = Path("data/search_cache")
+    # Keep the text of pages that were read, so v1 and v2 evaluation runs read exactly the same page text
+    page_cache: bool = True
+    page_cache_dir: Path = Path("data/page_cache")
+    # A contact (email or project URL) the reader sends in its User-Agent, so sites know who is reading their pages.
+    # Some sites (Wikipedia) block readers that give none. Empty: the reader uses a common browser User-Agent.
+    reader_contact: str = Field("", repr=False)
 
     # LangSmith
     langsmith_tracing: bool = False
@@ -45,13 +51,15 @@ class Settings(BaseSettings):
 
     # Storage
     embedding_model: str = "BAAI/bge-small-en-v1.5"
+    # Where the embedding model is downloaded to once (about 70 MB), instead of a temp folder that gets cleaned
+    embedding_cache_dir: Path = Path("data/models")
     chroma_dir: Path = Path("data/chroma")
     checkpoint_db: Path = Path("data/checkpoints.sqlite")
 
     # App
     api_base_url: str = "http://localhost:8000"
 
-    @field_validator("chroma_dir", "checkpoint_db", "search_cache_dir")
+    @field_validator("chroma_dir", "checkpoint_db", "search_cache_dir", "page_cache_dir", "embedding_cache_dir")
     @classmethod
     def _relative_to_project_root(cls, value: Path) -> Path:
         # Relative paths in .env are taken from the project root, not from wherever the command was run.

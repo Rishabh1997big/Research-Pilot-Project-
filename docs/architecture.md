@@ -15,8 +15,8 @@ graph LR
 | Node | Code | What it does |
 |---|---|---|
 | `plan` | `nodes/planner.py` (T06) | Topic to 3 to 6 sections, each with subtopics and up to 3 search queries |
-| `search` | `nodes/sources.py` (T07) | Runs each section's queries (sections in parallel threads) and picks up to 8 candidate pages per section: the queries' results in turn, at most 2 per site, no PDFs, no social media |
-| `read` | `nodes/sources.py` (T07) | Reads every candidate page once (8 at a time), skips unusable and paid pages, picks each section's most relevant passages, registers the pages that were read as `S1`, `S2`… and attaches every passage with its source ID |
+| `search` | `nodes/sources.py` (T07) | Runs each section's queries (sections in parallel threads) and picks up to 8 candidate pages per section: the queries' results in turn, at most 2 per site, no social media |
+| `read` | `nodes/sources.py` (T07), `tools/reader.py` (T08) | Reads every candidate web page or PDF once (8 at a time), skips unusable and paid pages, picks each section's most relevant passages, registers the pages that were read as `S1`, `S2`… and attaches every passage with its source ID |
 
 On a real topic, `plan → search → read` takes about 30 to 40 seconds: 1 LLM call, up to 18 searches, about 30 pages
 read, and 12 passages (about 10,000 characters) per section from 20 to 25 different sites.
@@ -78,6 +78,32 @@ In every case only the listed sections are put in `sections_to_run`, and `revisi
 ## Human-in-the-loop and checkpointing
 ## Analysis agent (and why it is a separate graph)
 ## Knowledge base and chatbot
+
+Code: `app/kb/ingest.py` (T09). The chatbot (T14, T19, T20) follows.
+
+- **Input is the research state, not the Markdown report.** The state already knows which section each paragraph
+  belongs to and which sources it cites, so nothing has to be parsed back out of the compiled report.
+- **One Chroma collection per report.** A chunk is one or more whole paragraphs of one section's draft (at most
+  900 characters), so every answer can name its section. The embedded text starts with the section title.
+- **Metadata per chunk:** section ID, title and position, chunk index, and the source IDs and URLs the chunk cites.
+  Chroma accepts lists, so the chatbot can filter by source (`{"source_ids": {"$contains": "S4"}}`).
+- **Section-level updates.** Re-ingesting a section deletes and re-embeds only that section's chunks, matching the
+  section-level change requests. A full ingest also removes sections that left the report.
+- **Embeddings run locally:** BGE-small (`BAAI/bge-small-en-v1.5`) through fastembed (ONNX), downloaded once to
+  `data/models` (65 MB). Loading takes about 3 seconds; a search about 0.04 seconds. Questions get BAAI's retrieval
+  instruction, passages do not. Chroma's anonymous telemetry is switched off.
+
+Cosine distances on the sample report, for "I don't know" handling (T19):
+
+| Question | Distance to the nearest chunk |
+|---|---|
+| Answered by the report ("What is a dark store?", "Do delivery partners get welfare benefits?") | 0.22 to 0.30 |
+| Close to the topic but not answered ("What was Alpha's revenue last year?") | 0.43 |
+| Unrelated ("What is the capital of France?", "How do I bake bread?") | 0.59 to 0.63 |
+
+A distance threshold near 0.5 catches unrelated questions, but not questions close to the topic that the report
+does not answer. Those need the prompt rule as well (answer only from the retrieved chunks, otherwise say so).
+
 ## Key decisions and trade-offs
 
 - **Swappable LLM providers** (`app/llm/provider.py`). Groq or Gemini is chosen by `LLM_PROVIDER`. When both have
@@ -115,4 +141,13 @@ In every case only the listed sections are put in `sections_to_run`, and `revisi
 - **Passages are picked with BM25 keyword scoring** against each section's title, subtopics and queries: no model
   download, fast, and the same result every time. Embeddings (already used by the knowledge base) could replace it
   if passage quality turns out to limit the writer.
-- **Known gap: Wikipedia** answers 403 to clients whose User-Agent has no contact details, so its pages are skipped.
+- **The reader reads PDFs too** (`tools/reader.py`, pypdf). On 153 real search results, PDFs were half of the
+  pages it could not read, and often the best sources (IIM Ahmedabad and IIM Bangalore research papers, law journals).
+  With PDF support, 88% of pages are read instead of 73%. PDF lines are joined into paragraphs, because pypdf breaks
+  every printed line, in one paper after every word.
+- **Pages are cached like search results** (`data/page_cache`), so the v1 and v2 runs read exactly the same text.
+  Pages that can never be used (404, blocked, too short) are cached as skipped; temporary failures (timeouts, 429,
+  5xx) are retried next time. A cached skip is retried when the reader improves or its User-Agent changes.
+- **Sites that block us are respected.** A 403 or 429 means skip the page, never work around it. With
+  `READER_CONTACT` set, the reader names the project and a contact in its User-Agent; Wikipedia requires this and
+  answers 403 otherwise. Without it the reader uses a common browser User-Agent and Wikipedia pages are skipped.

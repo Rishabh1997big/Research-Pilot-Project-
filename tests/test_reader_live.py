@@ -1,6 +1,6 @@
 """The reader on a real, stable page. Skipped by default; run with:  uv run pytest -m live
 
-(Not Wikipedia: it answers 403 to every client whose User-Agent has no contact details; see app/tools/reader.py.)
+Wikipedia is tested only when READER_CONTACT is set: it answers 403 to readers without a contact.
 """
 
 import pytest
@@ -16,3 +16,15 @@ def test_reads_a_real_page():
     assert page is not None
     assert len(page["text"]) > 2000
     assert "python" in page["text"].lower()
+
+
+def test_reads_wikipedia_when_a_contact_is_set():
+    from app.config import settings
+
+    if not settings.reader_contact.strip():
+        pytest.skip("READER_CONTACT is empty in .env; Wikipedia blocks readers without a contact")
+    page = read_page(
+        "https://en.wikipedia.org/wiki/Electric_vehicle", cfg=settings.model_copy(update={"page_cache": False})
+    )
+
+    assert page is not None and len(page["text"]) > 5000

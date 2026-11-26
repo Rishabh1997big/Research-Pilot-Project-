@@ -63,7 +63,7 @@ def test_candidates_take_each_querys_results_in_turn():
     assert chosen[:4] == ["https://a0.org", "https://b0.org", "https://a1.org", "https://b1.org"]
 
 
-def test_candidates_limit_each_site_and_skip_pdfs():
+def test_candidates_limit_each_site_and_keep_pdfs():
     results = [
         result("https://big.org/1"),
         result("https://www.big.org/2"),
@@ -75,6 +75,7 @@ def test_candidates_limit_each_site_and_skip_pdfs():
     assert [hit["url"] for hit in choose_candidates(results)] == [
         "https://big.org/1",
         "https://www.big.org/2",
+        "https://c.org/report.pdf",
         "https://d.org/x",
     ]
 

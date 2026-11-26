@@ -180,7 +180,7 @@ class Registry:
 
 def choose_candidates(results: list[SearchResult]) -> list[SearchHit]:
     """Up to CANDIDATES_PER_SECTION pages, taking the queries' results in turn (best of each query first), at most
-    MAX_PER_DOMAIN per site, no PDFs (the reader handles HTML only) and nothing from SKIPPED_DOMAINS."""
+    MAX_PER_DOMAIN per site, and nothing from SKIPPED_DOMAINS. PDFs are kept: the reader handles them."""
     by_query: dict[str, list[SearchResult]] = {}
     for result in results:
         by_query.setdefault(result["query"], []).append(result)
@@ -193,11 +193,7 @@ def choose_candidates(results: list[SearchResult]) -> list[SearchHit]:
                 continue
             result = query_results[rank]
             domain = domain_of(result["url"])
-            if (
-                result["url"].lower().split("?")[0].endswith(".pdf")
-                or _is_skipped_site(domain)
-                or per_domain[domain] >= MAX_PER_DOMAIN
-            ):
+            if _is_skipped_site(domain) or per_domain[domain] >= MAX_PER_DOMAIN:
                 continue
             per_domain[domain] += 1
             chosen.append({"url": result["url"], "title": result["title"]})
