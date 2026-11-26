@@ -4,6 +4,27 @@ Owner: Rishabh (T30)
 
 ## Overview
 ## Research agent graph
+
+Code: `app/agents/research/graph.py`. Built so far (outline approval, write, verify and compile follow):
+
+```mermaid
+graph LR
+    START([start]) --> plan --> search --> read --> END([end])
+```
+
+| Node | Code | What it does |
+|---|---|---|
+| `plan` | `nodes/planner.py` (T06) | Topic to 3 to 6 sections, each with subtopics and up to 3 search queries |
+| `search` | `nodes/sources.py` (T07) | Runs each section's queries (sections in parallel threads) and picks up to 8 candidate pages per section: the queries' results in turn, at most 2 per site, no PDFs, no social media |
+| `read` | `nodes/sources.py` (T07) | Reads every candidate page once (8 at a time), skips unusable and paid pages, picks each section's most relevant passages, registers the pages that were read as `S1`, `S2`… and attaches every passage with its source ID |
+
+On a real topic, `plan → search → read` takes about 30 to 40 seconds: 1 LLM call, up to 18 searches, about 30 pages
+read, and 12 passages (about 10,000 characters) per section from 20 to 25 different sites.
+
+The search and read steps use threads inside one node rather than one LangGraph branch per section, so a page that
+several sections found is fetched once and the source IDs are handed out in one place. The writer (T12) is where
+per-section branches pay off.
+
 ## State design
 
 Code: `app/agents/research/state.py`.
@@ -17,6 +38,7 @@ Code: `app/agents/research/state.py`.
 | `outline_approved` | bool | replace | Set when the user approves the outline |
 | `feedback` | list of `Feedback` | replace | Change requests with their kind and target sections |
 | `sections_to_run` | list of section IDs | replace | Sections the next search, write and verify pass works on |
+| `search_results` | dict: section ID to pages found | replace | Hand-over from search to read; the read step empties it |
 | `report` | str | replace | Final Markdown with numbered citations and references |
 | `metrics` | `RunMetrics` | sum | LLM calls, search calls, pages fetched, tokens |
 
@@ -81,3 +103,16 @@ In every case only the listed sections are put in `sections_to_run`, and `revisi
   2026. The prompt now asks for general terms and no years, and code removes any year left in a query, so the search
   finds the current facts. Limits (3 to 6 sections, at most 3 queries each) are applied in code, not in the JSON
   schema, because Groq's strict mode can reject schema limits; this caps a report at 18 web searches.
+- **A page gets a source ID only after it has been read** (`nodes/sources.py`). Every source in the registry
+  therefore exists and was read, and every passage the writer sees carries the ID of the page it came from, which
+  is the brief's "no citation, no claim" and "do not fabricate sources" built into the data.
+- **One article, one source.** Pages are matched by URL and by text, so copies of an article on two sites count once.
+  In testing, finance.yahoo.com and uk.finance.yahoo.com carried the same article with one word different
+  ("inquiries" / "enquiries"), so texts match when 80% of their 5-word sequences overlap.
+- **Weak sources are filtered before they can be cited.** Social media and forums, the search provider's own pages
+  (Tavily once returned its company-database page for an unrelated UK firm named "Q Commerce"), paid press releases,
+  paywalled pages with under 500 characters of text, and blocked pages are skipped.
+- **Passages are picked with BM25 keyword scoring** against each section's title, subtopics and queries: no model
+  download, fast, and the same result every time. Embeddings (already used by the knowledge base) could replace it
+  if passage quality turns out to limit the writer.
+- **Known gap: Wikipedia** answers 403 to clients whose User-Agent has no contact details, so its pages are skipped.
