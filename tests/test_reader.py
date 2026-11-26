@@ -1,5 +1,10 @@
+import io
+import json
+import logging
+
 import httpx
 import pytest
+from pypdf import PdfReader, PdfWriter
 
 from app.config import Settings
 from app.tools import reader
@@ -220,6 +225,7 @@ PDF_LINES = [
     "and the leading platforms raised fresh funding to expand into smaller towns.",
     "Demand for groceries and daily essentials drove most orders, while electri-",
     "city and logistics costs remained a large share of operating expenses.",
+    "Cheaper electricity let dark stores run cold storage for longer hours.",  # so "electri-/city" is a split word
 ] + [f"Finding {n}: delivery times stayed under fifteen minutes in {n + 4} major metro areas." for n in range(6)]
 
 
@@ -264,9 +270,9 @@ def test_broken_and_oversized_pdfs_are_skipped(monkeypatch):
 
 
 def test_tidy_pdf_text():
-    raw = "Rise\nof\nQuick\nCommerce\n\nelectri-\ncity  costs\n\n\n"
+    raw = "Rise\nof\nQuick\nCommerce\n\nelectri-\ncity  costs\n\nelectricity prices\n\n\n"
 
-    assert reader.tidy_pdf_text(raw) == "Rise of Quick Commerce\nelectricity costs"
+    assert reader.tidy_pdf_text(raw) == "Rise of Quick Commerce\nelectricity costs\nelectricity prices"
 
 
 # ---- who we say we are ----
@@ -313,3 +319,257 @@ def test_a_page_that_was_read_stays_cached_when_the_user_agent_changes(cache_in_
     read_page("https://a.org/ev", client, cache_in_tmp.model_copy(update={"reader_contact": "team@example.org"}))
 
     assert len(calls) == 1
+
+
+# ---- T13: the reader's own HTTP client ----
+
+
+def test_new_client_settings():
+    with reader.new_client(Settings(_env_file=None, reader_contact="")) as client:
+        assert client.follow_redirects
+        assert client.timeout.read == reader.TIMEOUT_SECONDS
+        assert client.timeout.connect == reader.CONNECT_TIMEOUT_SECONDS
+        assert "application/pdf" in client.headers["Accept"]
+        assert "text/html" in client.headers["Accept"]
+
+
+def test_read_page_without_a_client_opens_and_closes_its_own(monkeypatch):
+    own = client_for({"https://a.org/ev": html(GOOD_HTML)})
+    monkeypatch.setattr(reader, "new_client", lambda cfg=None: own)
+
+    assert read_page("https://a.org/ev") is not None
+    assert own.is_closed
+
+
+def test_read_pages_without_a_client_shares_one_client(monkeypatch):
+    made = []
+
+    def new_client(cfg=None):
+        made.append(1)
+        return client_for({"https://a.org/1": html(GOOD_HTML), "https://a.org/2": html(GOOD_HTML)})
+
+    monkeypatch.setattr(reader, "new_client", new_client)
+
+    pages = read_pages(["https://a.org/1", "https://a.org/2"])
+
+    assert len(made) == 1
+    assert all(pages.values())
+
+
+def test_read_pages_with_no_urls_opens_no_client(monkeypatch):
+    def no_client(cfg=None):
+        raise AssertionError("no client is needed for an empty list")
+
+    monkeypatch.setattr(reader, "new_client", no_client)
+
+    assert read_pages([]) == {}
+
+
+class RecordingPool:
+    """Stands in for ThreadPoolExecutor: records the pool size it was given and runs the work in this thread."""
+
+    sizes: list[int] = []
+
+    def __init__(self, max_workers: int) -> None:
+        RecordingPool.sizes.append(max_workers)
+
+    def __enter__(self) -> "RecordingPool":
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        return None
+
+    def map(self, fn, items):
+        return [fn(item) for item in items]
+
+
+@pytest.mark.parametrize(("url_count", "pool_size"), [(6, 2), (1, 1)])
+def test_read_pages_reads_at_most_max_workers_pages_at_once(monkeypatch, url_count, pool_size):
+    monkeypatch.setattr(reader, "MAX_WORKERS", 2)
+    monkeypatch.setattr(reader, "ThreadPoolExecutor", RecordingPool)
+    monkeypatch.setattr(RecordingPool, "sizes", [])
+    urls = [f"https://a.org/{n}" for n in range(url_count)]
+
+    pages = read_pages(urls, client_for({url: html(GOOD_HTML) for url in urls}))
+
+    assert RecordingPool.sizes == [pool_size]  # never more threads than MAX_WORKERS, nor than pages to read
+    assert list(pages) == urls and all(pages.values())
+
+
+def test_a_redirected_page_is_cited_by_the_url_that_was_asked_for():
+    def handle(request):
+        if request.url.path == "/old":
+            return httpx.Response(301, headers={"location": "https://a.org/new"})
+        return html(GOOD_HTML)
+
+    client = httpx.Client(transport=httpx.MockTransport(handle), follow_redirects=True)
+
+    page = read_page("https://a.org/old", client)
+
+    assert page is not None and page["url"] == "https://a.org/old"
+
+
+# ---- T13: content types ----
+
+
+def test_a_response_without_a_content_type_is_skipped_for_good():
+    client, calls = counting_client(httpx.Response(200, content=GOOD_HTML.encode()))
+
+    assert read_page("https://a.org/x", client) is None
+    assert read_page("https://a.org/x", client) is None
+    assert len(calls) == 1
+
+
+def test_a_generic_download_that_is_not_a_pdf_url_is_skipped():
+    url = "https://a.org/file.bin"
+
+    assert read_page(url, client_for({url: pdf_response(make_pdf(PDF_LINES), "application/octet-stream")})) is None
+
+
+def test_a_pdf_url_with_a_query_string_is_read_as_a_pdf():
+    url = "https://gov.in/report.PDF?download=1"
+
+    page = read_page(url, client_for({url: pdf_response(make_pdf(PDF_LINES), "application/octet-stream")}))
+
+    assert page is not None and "Quick commerce orders" in page["text"]
+
+
+def test_a_page_whose_extraction_crashes_is_skipped_for_good(monkeypatch):
+    def crash(*args, **kwargs):
+        raise ValueError("broken markup")
+
+    monkeypatch.setattr(reader.trafilatura, "bare_extraction", crash)
+    client, calls = counting_client(html(GOOD_HTML))
+
+    assert read_page("https://a.org/x", client) is None
+    assert read_page("https://a.org/x", client) is None
+    assert len(calls) == 1
+
+
+def test_an_html_title_that_is_only_a_file_name_is_dropped(monkeypatch):
+    monkeypatch.setattr(
+        reader.trafilatura,
+        "bare_extraction",
+        lambda *args, **kwargs: type("Doc", (), {"title": "Microsoft Word - final report", "text": "x" * 600})(),
+    )
+
+    page = read_page("https://a.org/x", client_for({"https://a.org/x": html(GOOD_HTML)}))
+
+    assert page is not None and page["title"] == ""
+
+
+# ---- T13: more PDFs ----
+
+
+def encrypted(body: bytes, user_password: str) -> bytes:
+    writer = PdfWriter(clone_from=PdfReader(io.BytesIO(body)))
+    writer.encrypt(user_password=user_password, owner_password="owner", algorithm="RC4-128")
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+def test_a_password_protected_pdf_is_skipped_for_good():
+    client, calls = counting_client(pdf_response(encrypted(make_pdf(PDF_LINES), "secret")))
+
+    assert read_page("https://a.org/locked.pdf", client) is None
+    assert read_page("https://a.org/locked.pdf", client) is None
+    assert len(calls) == 1
+
+
+def test_an_encrypted_pdf_without_a_password_is_read():
+    url = "https://a.org/open.pdf"
+
+    page = read_page(url, client_for({url: pdf_response(encrypted(make_pdf(PDF_LINES), ""))}))
+
+    assert page is not None and "Quick commerce orders" in page["text"]
+
+
+def test_only_the_first_max_pdf_pages_are_read(monkeypatch):
+    writer = PdfWriter()
+    writer.append(PdfReader(io.BytesIO(make_pdf(PDF_LINES))))
+    writer.append(PdfReader(io.BytesIO(make_pdf(["Appendix: the last page has no findings worth citing."] * 12))))
+    body = io.BytesIO()
+    writer.write(body)
+    monkeypatch.setattr(reader, "MAX_PDF_PAGES", 1)
+
+    page = read_page("https://a.org/two.pdf", client_for({"https://a.org/two.pdf": pdf_response(body.getvalue())}))
+
+    assert page is not None
+    assert "Quick commerce orders" in page["text"]
+    assert "Appendix" not in page["text"]
+
+
+@pytest.mark.parametrize(
+    ("raw", "tidy"),
+    [
+        ("well-\nknown", "well-known"),  # a real hyphen at a line end is kept
+        ("electric two-\nwheeler sales", "electric two-wheeler sales"),
+        ("state-of-the-\nart", "state-of-the-art"),
+        ("2023-\n24 figures", "2023-24 figures"),  # a year range is not one number
+        ("electri-\ncity costs. Electricity prices", "electricity costs. Electricity prices"),  # case is ignored
+        ("electri-\ncity costs", "electri-city costs"),  # no sign of "electricity": keep what was printed
+        ("pre- \npost", "pre- post"),  # a hyphen followed by a space is a dash, not a split word
+        ("", ""),
+        ("  \n\n  \n", ""),
+    ],
+)
+def test_tidy_pdf_text_edge_cases(raw, tidy):
+    assert reader.tidy_pdf_text(raw) == tidy
+
+
+def test_a_hyphenated_word_split_across_pdf_lines_keeps_its_hyphen():
+    url = "https://a.org/ev.pdf"
+    lines = ["Sales of the electric two-", "wheeler grew fast, and well-", "known makers expanded."] + PDF_LINES
+
+    page = read_page(url, client_for({url: pdf_response(make_pdf(lines))}))
+
+    assert page is not None
+    assert "electric two-wheeler grew fast, and well-known makers" in page["text"]
+    assert "electricity and logistics costs" in page["text"]  # the split word in the same PDF is still joined
+
+
+# ---- T13: cache files ----
+
+
+def test_a_cache_entry_for_another_url_is_ignored(cache_in_tmp):
+    client, calls = counting_client(html(GOOD_HTML))
+    path = reader._cache_file("https://a.org/ev", cache_in_tmp)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"url": "https://other.org/", "page": {}}), encoding="utf-8")
+
+    page = read_page("https://a.org/ev", client)
+
+    assert page is not None
+    assert len(calls) == 1
+
+
+def test_a_skip_is_cached_with_its_reason(cache_in_tmp):
+    client, _ = counting_client(html(GOOD_HTML, status=404))
+    read_page("https://a.org/gone", client)
+
+    entry = json.loads(reader._cache_file("https://a.org/gone", cache_in_tmp).read_text(encoding="utf-8"))
+
+    assert entry["page"] == {}
+    assert entry["skipped"] == "HTTP 404"
+    assert entry["skipped_by"] == reader._skip_context(cache_in_tmp)
+
+
+def test_a_failed_cache_write_does_not_lose_the_page(cache_in_tmp, caplog):
+    cache_in_tmp.page_cache_dir.parent.mkdir(parents=True, exist_ok=True)
+    cache_in_tmp.page_cache_dir.write_text("a file where the cache folder should be", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="app.tools.reader"):
+        page = read_page("https://a.org/ev", client_for({"https://a.org/ev": html(GOOD_HTML)}))
+
+    assert page is not None
+    assert "Could not cache page" in caplog.text
+
+
+def test_no_temporary_files_are_left_in_the_cache(cache_in_tmp):
+    read_pages(
+        [f"https://a.org/{n}" for n in range(4)],
+        client_for({f"https://a.org/{n}": html(GOOD_HTML) for n in range(4)}),
+    )
+
+    assert sorted(p.suffix for p in cache_in_tmp.page_cache_dir.iterdir()) == [".json"] * 4

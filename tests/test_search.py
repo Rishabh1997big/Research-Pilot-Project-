@@ -1,4 +1,9 @@
 import logging
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -231,3 +236,269 @@ def test_url_key_keeps_different_pages_apart(a, b):
 
 def test_domain_of():
     assert domain_of("https://www.Autocarindia.com/bike-news/x") == "autocarindia.com"
+
+
+# ---- T13: more URL keys ----
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        ("https://a.org/x?ref=home", "https://a.org/x"),
+        ("https://a.org/x?UTM_Source=t&gclid=9&msclkid=8&ref_src=tw", "https://a.org/x"),
+        ("  https://a.org/x  ", "https://a.org/x"),
+        ("http://a.org:80/x", "https://a.org/x"),
+    ],
+)
+def test_url_key_ignores_tracking_parameters_spaces_and_default_ports(a, b):
+    assert url_key(a) == url_key(b)
+
+
+def test_url_key_keeps_a_non_default_port():
+    assert url_key("https://a.org:8080/x") != url_key("https://a.org/x")
+
+
+@pytest.mark.parametrize(
+    ("url", "domain"),
+    [("https://sub.A.org:8080/x", "sub.a.org"), ("not a url", ""), ("", "")],
+)
+def test_domain_of_edge_cases(url, domain):
+    assert domain_of(url) == domain
+
+
+# ---- T13: provider mapping ----
+
+
+def test_ddgs_results_are_mapped_and_results_without_a_link_dropped(monkeypatch, cfg):
+    sent = {}
+
+    class FakeDDGS:
+        def __init__(self, timeout):
+            sent["timeout"] = timeout
+
+        def text(self, query, max_results, backend):
+            sent.update(query=query, max_results=max_results, backend=backend)
+            return [
+                {"href": "https://a.org/x", "title": "A", "body": "Snippet"},
+                {"title": "no link"},
+                {"href": "https://b.org/y"},
+            ]
+
+    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS=FakeDDGS))
+
+    results = search._ddgs_search("ev sales", 4, cfg)
+
+    assert sent == {"timeout": search.TIMEOUT_SECONDS, "query": "ev sales", "max_results": 4, "backend": "auto"}
+    assert results == [
+        {"url": "https://a.org/x", "title": "A", "snippet": "Snippet", "query": "ev sales", "provider": "ddgs"},
+        {"url": "https://b.org/y", "title": "", "snippet": "", "query": "ev sales", "provider": "ddgs"},
+    ]
+
+
+def test_tavily_missing_fields_and_results_without_a_url(monkeypatch, with_tavily):
+    def fake_post(url, headers, json, timeout):
+        payload = {
+            "results": [
+                {"url": "", "title": "no url"},
+                {"title": "missing url"},
+                {"url": "https://a.org/x", "title": None, "content": None},
+            ]
+        }
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(search.httpx, "post", fake_post)
+
+    assert search._tavily_search("q", 5, with_tavily) == [
+        {"url": "https://a.org/x", "title": "", "snippet": "", "query": "q", "provider": "tavily"}
+    ]
+
+
+def test_tavily_answer_without_results_is_empty(monkeypatch, with_tavily):
+    monkeypatch.setattr(
+        search.httpx, "post", lambda url, **kwargs: httpx.Response(200, json={}, request=httpx.Request("POST", url))
+    )
+
+    assert search._tavily_search("q", 5, with_tavily) == []
+
+
+def test_tavily_http_error_is_raised_for_the_fallback_to_handle(monkeypatch, with_tavily):
+    monkeypatch.setattr(
+        search.httpx, "post", lambda url, **kwargs: httpx.Response(401, request=httpx.Request("POST", url))
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        search._tavily_search("q", 5, with_tavily)
+
+
+# ---- T13: Tavily as the primary provider ----
+
+
+def test_ddgs_takes_over_when_tavily_is_primary_and_fails(monkeypatch, with_tavily):
+    tavily_calls = fake_provider(monkeypatch, "tavily", {"q": RuntimeError("432 credits used up")})
+    ddgs_calls = fake_provider(monkeypatch, "ddgs", {"q": ["https://a.org"]})
+
+    batch = search_queries(["q"], cfg=with_tavily.model_copy(update={"search_provider": "tavily"}))
+
+    assert tavily_calls == ["q"]
+    assert ddgs_calls == ["q"]
+    assert batch.results[0]["provider"] == "ddgs"
+
+
+def test_max_results_reaches_the_provider(monkeypatch, cfg):
+    fake_provider(monkeypatch, "ddgs", {"q": [f"https://a.org/{n}" for n in range(10)]})
+
+    assert len(search_queries(["q"], max_results=3, cfg=cfg).results) == 3
+
+
+def test_a_skipped_query_is_logged_with_provider_attempts_and_reason(monkeypatch, cfg, caplog):
+    fake_provider(monkeypatch, "ddgs", {"bad": RuntimeError("202 Ratelimit")})
+
+    with caplog.at_level(logging.WARNING, logger="app.tools.search"):
+        search_queries(["bad"], cfg=cfg)
+
+    assert "ddgs failed 3 times on 'bad' (RuntimeError: 202 Ratelimit)" in caplog.text
+
+
+# ---- T13: cache keys ----
+
+
+def test_cache_ignores_the_case_of_the_query(monkeypatch, cfg):
+    calls = fake_provider(monkeypatch, "ddgs", {"EV Sales": ["https://a.org"], "ev sales": ["https://b.org"]})
+
+    search_queries(["EV Sales"], cfg=cfg)
+    batch = search_queries(["ev sales"], cfg=cfg)
+
+    assert calls == ["EV Sales"]
+    assert batch.search_calls == 0
+
+
+def test_cache_is_kept_apart_per_max_results(monkeypatch, cfg):
+    calls = fake_provider(monkeypatch, "ddgs", {"q": ["https://a.org", "https://b.org"]})
+
+    search_queries(["q"], max_results=1, cfg=cfg)
+    batch = search_queries(["q"], max_results=2, cfg=cfg)
+
+    assert calls == ["q", "q"]
+    assert len(batch.results) == 2
+
+
+def test_a_damaged_cache_file_is_ignored(monkeypatch, cfg):
+    calls = fake_provider(monkeypatch, "ddgs", {"q": ["https://a.org"]})
+    search_queries(["q"], cfg=cfg)
+    next(cfg.search_cache_dir.iterdir()).write_text("{not json", encoding="utf-8")
+
+    batch = search_queries(["q"], cfg=cfg)
+
+    assert calls == ["q", "q"]
+    assert [r["url"] for r in batch.results] == ["https://a.org"]
+
+
+def test_a_failed_cache_write_does_not_lose_the_results(monkeypatch, cfg, caplog):
+    fake_provider(monkeypatch, "ddgs", {"q": ["https://a.org"]})
+    cfg.search_cache_dir.parent.mkdir(parents=True, exist_ok=True)
+    cfg.search_cache_dir.write_text("a file where the cache folder should be", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="app.tools.search"):
+        batch = search_queries(["q"], cfg=cfg)
+
+    assert [r["url"] for r in batch.results] == ["https://a.org"]
+    assert "Could not cache search results" in caplog.text
+
+
+def test_two_threads_caching_the_same_query_use_their_own_temporary_files(monkeypatch, cfg, caplog):
+    """Two sections that search the same query at the same moment both write its cache file."""
+    both_writing = threading.Barrier(2, timeout=5)
+    temporary_files: list[str] = []
+    write_text = Path.write_text
+
+    def write_text_together(self, *args, **kwargs):
+        temporary_files.append(self.name)
+        both_writing.wait()  # neither thread moves its file into place before the other has written
+        return write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", write_text_together)
+    results = [{"url": "https://a.org", "title": "", "snippet": "", "query": "q", "provider": "ddgs"}]
+
+    with caplog.at_level(logging.WARNING, logger="app.tools.search"):
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(search._cache_put, "q", 5, results, cfg) for _ in range(2)]
+            for future in futures:
+                future.result(timeout=10)  # re-raises any error from a worker thread
+
+    assert len(set(temporary_files)) == 2
+    assert "Could not cache" not in caplog.text
+    assert [p.suffix for p in cfg.search_cache_dir.iterdir()] == [".json"]  # no temporary file left behind
+    assert search._cache_get("q", 5, cfg) == results
+
+
+# ---- T13: spacing, backoff and one ddgs request at a time ----
+
+
+class FakeClock:
+    """Stands in for the time module: sleeping moves the clock forward instead of waiting."""
+
+    def __init__(self) -> None:
+        self.now = 100.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch) -> FakeClock:
+    fake = FakeClock()
+    monkeypatch.setattr(search, "time", fake)
+    monkeypatch.setattr(search, "_last_request_at", 0.0)
+    return fake
+
+
+def test_ddgs_requests_are_spaced_out(monkeypatch, cfg, clock):
+    monkeypatch.setattr(search, "MIN_INTERVAL_SECONDS", 1.0)
+    fake_provider(monkeypatch, "ddgs", {"q1": ["https://a.org"], "q2": ["https://b.org"], "q3": ["https://c.org"]})
+
+    search_queries(["q1", "q2", "q3"], cfg=cfg)
+
+    assert clock.sleeps == [1.0, 1.0]  # none before the first request
+
+
+def test_tavily_requests_are_not_spaced_out(monkeypatch, with_tavily, clock):
+    monkeypatch.setattr(search, "MIN_INTERVAL_SECONDS", 1.0)
+    fake_provider(monkeypatch, "tavily", {"q1": ["https://a.org"], "q2": ["https://b.org"]})
+
+    search_queries(["q1", "q2"], cfg=with_tavily.model_copy(update={"search_provider": "tavily"}))
+
+    assert clock.sleeps == []
+
+
+def test_retries_back_off_exponentially(monkeypatch, cfg, clock):
+    monkeypatch.setattr(search, "BACKOFF_SECONDS", 2.0)
+    monkeypatch.setattr(search, "MAX_RETRIES", 3)  # a fourth attempt tells doubling apart from adding
+    fake_provider(monkeypatch, "ddgs", {"bad": RuntimeError("timeout")})
+
+    search_queries(["bad"], cfg=cfg)
+
+    assert clock.sleeps == [2.0, 4.0, 8.0]
+
+
+def test_parallel_sections_send_ddgs_requests_one_at_a_time(monkeypatch, cfg):
+    held_lock: list[bool] = []
+
+    def fetch(query, max_results, cfg):
+        # Every ddgs request must run while it holds the module's request lock, so two never overlap.
+        held_lock.append(search._request_lock.locked())
+        return [{"url": f"https://a.org/{query}", "title": "", "snippet": "", "query": query, "provider": "ddgs"}]
+
+    monkeypatch.setitem(search._PROVIDERS, "ddgs", fetch)
+    queries = [f"q{n}" for n in range(4)]
+
+    with ThreadPoolExecutor(max_workers=len(queries)) as pool:
+        futures = [pool.submit(search_queries, [query], cfg=cfg) for query in queries]
+        batches = [future.result(timeout=10) for future in futures]  # re-raises any error from a worker thread
+
+    assert held_lock == [True] * len(queries)
+    assert [batch.results[0]["url"] for batch in batches] == [f"https://a.org/{query}" for query in queries]
