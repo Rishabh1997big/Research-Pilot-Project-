@@ -1,0 +1,49 @@
+{
+  "_note": "Sample report for development and tests until the writer (T12) exists. The text and numbers are made up and every source is an example.org page; do not treat any of it as fact.",
+  "topic": "Quick commerce in India (sample)",
+  "section_order": ["sec-1", "sec-2", "sec-3"],
+  "sections": {
+    "sec-1": {
+      "id": "sec-1",
+      "title": "Market size and growth",
+      "subtopics": ["order volumes", "growth rate"],
+      "queries": [],
+      "passages": [],
+      "source_ids": ["S1", "S2"],
+      "draft": "Quick commerce grew fast in large Indian cities, with daily orders rising every quarter of the sample year [S1]. Most orders came from groceries and daily essentials delivered in under fifteen minutes [S1].\n\nAnalysts in the sample expect the market to keep growing, though more slowly than before, as platforms expand into smaller towns [S2]. Growth in smaller towns depends on enough order density to keep delivery costs low [S2].",
+      "citations": [],
+      "status": "drafted",
+      "revision": 0
+    },
+    "sec-2": {
+      "id": "sec-2",
+      "title": "Key players and business models",
+      "subtopics": ["leading platforms", "dark stores"],
+      "queries": [],
+      "passages": [],
+      "source_ids": ["S2", "S3"],
+      "draft": "Three platforms, called Alpha, Beta and Gamma in this sample, handle most quick commerce orders [S3]. Alpha has the largest share of orders, followed by Beta [S3].\n\nAll three run dark stores: small warehouses close to customers that are not open to walk-in shoppers [S2]. A dark store keeps a few thousand fast-selling items, so a picker can pack an order in about two minutes [S2]. Placing dark stores within a short ride of most homes is what makes ten-minute delivery possible, and it is also the largest fixed cost of the model, because each store needs rent, staff and stock whether or not orders come in [S2, S3]. Platforms therefore open new stores only where they expect enough orders per day, and they close or merge stores that stay below that level for several months [S3]. In the sample, this careful expansion is described as the main reason the leading platforms have kept their losses from growing as fast as their order volumes [S3].",
+      "citations": [],
+      "status": "drafted",
+      "revision": 0
+    },
+    "sec-3": {
+      "id": "sec-3",
+      "title": "Regulation and gig workers",
+      "subtopics": ["delivery partner welfare"],
+      "queries": [],
+      "passages": [],
+      "source_ids": ["S4"],
+      "draft": "Delivery partners work as gig workers, so they are not employees of the platforms [S4]. A sample state law requires platforms to pay into a welfare fund for gig workers [S4].\n\nThe sample report found no national rule on delivery time targets.",
+      "citations": [],
+      "status": "drafted",
+      "revision": 0
+    }
+  },
+  "sources": {
+    "S1": {"id": "S1", "url": "https://example.org/sample/qcom-orders", "title": "Sample: quick commerce order volumes", "domain": "example.org"},
+    "S2": {"id": "S2", "url": "https://example.org/sample/dark-stores", "title": "Sample: how dark stores work", "domain": "example.org"},
+    "S3": {"id": "S3", "url": "https://example.org/sample/platform-shares", "title": "Sample: platform market shares", "domain": "example.org"},
+    "S4": {"id": "S4", "url": "https://example.org/sample/gig-worker-law", "title": "Sample: gig worker welfare law", "domain": "example.org"}
+  }
+}

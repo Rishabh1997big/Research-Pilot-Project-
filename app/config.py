@@ -51,13 +51,15 @@ class Settings(BaseSettings):
 
     # Storage
     embedding_model: str = "BAAI/bge-small-en-v1.5"
+    # Where the embedding model is downloaded to once (about 70 MB), instead of a temp folder that gets cleaned
+    embedding_cache_dir: Path = Path("data/models")
     chroma_dir: Path = Path("data/chroma")
     checkpoint_db: Path = Path("data/checkpoints.sqlite")
 
     # App
     api_base_url: str = "http://localhost:8000"
 
-    @field_validator("chroma_dir", "checkpoint_db", "search_cache_dir", "page_cache_dir")
+    @field_validator("chroma_dir", "checkpoint_db", "search_cache_dir", "page_cache_dir", "embedding_cache_dir")
     @classmethod
     def _relative_to_project_root(cls, value: Path) -> Path:
         # Relative paths in .env are taken from the project root, not from wherever the command was run.
