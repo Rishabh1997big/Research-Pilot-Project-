@@ -76,3 +76,8 @@ In every case only the listed sections are put in `sections_to_run`, and `revisi
   query took 10 to 50 seconds. With a fallback, ddgs gets one attempt and Tavily (about 3 seconds per query) takes
   over. Results are cached on disk, so the v1 and v2 evaluation runs see the same sources; that keeps the comparison
   fair and saves rate limits.
+- **The planner keeps its own knowledge out of the search queries** (`nodes/planner.py`). In testing, the LLM's
+  queries named products and schemes that no longer exist or never did, and asked for "2023" and "2024" data in late
+  2026. The prompt now asks for general terms and no years, and code removes any year left in a query, so the search
+  finds the current facts. Limits (3 to 6 sections, at most 3 queries each) are applied in code, not in the JSON
+  schema, because Groq's strict mode can reject schema limits; this caps a report at 18 web searches.
