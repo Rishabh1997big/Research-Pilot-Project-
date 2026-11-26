@@ -74,6 +74,13 @@ class Feedback(TypedDict):
     section_ids: list[str]
 
 
+class SearchHit(TypedDict):
+    """A page the search found for a section, waiting to be read. It gets a source ID only once it has been read."""
+
+    url: str
+    title: str
+
+
 class RunMetrics(TypedDict):
     llm_calls: int
     search_calls: int
@@ -116,6 +123,8 @@ class ResearchState(TypedDict, total=False):
     outline_approved: bool
     feedback: list[Feedback]
     sections_to_run: list[str]  # sections the next search, write and verify pass works on
+    # Search results per section, from the search step to the read step; the read step empties it again.
+    search_results: dict[str, list[SearchHit]]
     report: str  # final Markdown with numbered citations and a reference list
     metrics: Annotated[RunMetrics, add_metrics]
 
@@ -151,6 +160,7 @@ def initial_state(topic: str) -> ResearchState:
         "outline_approved": False,
         "feedback": [],
         "sections_to_run": [],
+        "search_results": {},
         "report": "",
         "metrics": empty_metrics(),
     }
