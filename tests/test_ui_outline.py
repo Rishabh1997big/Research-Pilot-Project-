@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 
+import httpx
 import pytest
 from streamlit.testing.v1 import AppTest
 
@@ -64,6 +65,21 @@ def test_edits_are_kept_when_approving():
     first = at.session_state["sections"][0]
     assert first["title"] == "Market size"
     assert first["subtopics"] == ["sales", "growth"]
+
+
+def test_mock_mode_never_calls_the_api(monkeypatch):
+    # A health check on every click made each click wait 3 to 5 seconds while the API was down
+    def no_network(*args, **kwargs):
+        raise AssertionError("mock mode called the API")
+
+    monkeypatch.setattr(httpx, "get", no_network)
+    monkeypatch.setattr(httpx, "post", no_network)
+
+    at = start()
+    button(at, "Approve outline").click().run()
+
+    assert not at.exception
+    assert at.session_state["page"] == "writing"
 
 
 def test_new_topic_button_resets():

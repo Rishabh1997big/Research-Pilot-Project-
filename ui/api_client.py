@@ -20,6 +20,7 @@ from app.config import settings
 
 USE_MOCK = os.getenv("UI_USE_MOCK", "1") != "0"
 TIMEOUT = 300  # planning and research take a while
+MOCK_DELAY = 0.3  # seconds; long enough to see the spinner, short enough to keep clicks and tests quick
 
 
 class ApiError(Exception):
@@ -41,7 +42,7 @@ def start_research(topic: str) -> dict:
     The research graph then waits for outline approval (T11).
     """
     if USE_MOCK:
-        time.sleep(1)
+        time.sleep(MOCK_DELAY)
         return {
             "run_id": "mock-run-1",
             "sections": [
@@ -57,6 +58,6 @@ def start_research(topic: str) -> dict:
 def approve_outline(run_id: str, sections: list[dict]) -> dict:
     """Send the approved (possibly edited) outline; the paused graph resumes. Returns {"status": "writing"}."""
     if USE_MOCK:
-        time.sleep(1)
+        time.sleep(MOCK_DELAY)
         return {"status": "writing"}
     return _post(f"/research/{run_id}/approve", {"sections": sections})
