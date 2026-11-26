@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -20,23 +20,25 @@ load_dotenv(ROOT_DIR / ".env")
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ROOT_DIR / ".env", env_file_encoding="utf-8", extra="ignore")
 
+    # API keys use Field(repr=False), so printing the settings (logs, test failures, tracebacks) never shows them.
+
     # LLM
     llm_provider: Literal["groq", "gemini"] = "groq"
-    groq_api_key: str = ""
+    groq_api_key: str = Field("", repr=False)
     groq_model: str = ""
-    gemini_api_key: str = ""
+    gemini_api_key: str = Field("", repr=False)
     gemini_model: str = ""
 
     # Search
     search_provider: Literal["ddgs", "tavily"] = "ddgs"
-    tavily_api_key: str = ""
+    tavily_api_key: str = Field("", repr=False)
     # Keep search results on disk, so re-runs and v1/v2 evaluation reuse them instead of hitting rate limits again
     search_cache: bool = True
     search_cache_dir: Path = Path("data/search_cache")
 
     # LangSmith
     langsmith_tracing: bool = False
-    langsmith_api_key: str = ""
+    langsmith_api_key: str = Field("", repr=False)
     langsmith_project: str = "researchpilot"
     # Tag on every trace, so runs of different system versions (e.g. v1 without verifier, v2 with) can be compared
     run_version: str = "v1"

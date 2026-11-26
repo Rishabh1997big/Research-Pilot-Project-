@@ -135,7 +135,7 @@ def test_failed_and_empty_searches_are_not_cached(monkeypatch, cfg):
 
 
 def test_provider_order():
-    base = Settings(_env_file=None, tavily_api_key="")
+    base = Settings(_env_file=None, search_provider="ddgs", tavily_api_key="")
 
     assert provider_order(base) == ["ddgs"]
     assert provider_order(base.model_copy(update={"tavily_api_key": "k"})) == ["ddgs", "tavily"]
