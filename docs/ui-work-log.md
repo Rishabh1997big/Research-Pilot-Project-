@@ -9,7 +9,7 @@ Tasks covered: **T10, T15, T25** (UI) and **T26, T29** (evaluation).
 
 | Task | What | Status | Branch / PR |
 |---|---|---|---|
-| T10 | Topic input and outline review screens | Built and tested on mock data. **Not committed, no PR yet.** | `feature/T10-outline-screen` |
+| T10 | Topic input and outline review screens | Done on mock data. Merged (PR #9). Real API waits for T11 and T24. | `feature/T10-outline-screen` |
 | T15 | Report view, clickable citations, change-request box | Not started | |
 | T25 | Analysis tab and chat window | Not started | |
 | T26 | Chatbot metrics with RAGAS | Not started | |
@@ -145,10 +145,28 @@ Use this to check the work before the pull request.
      `stVerticalBlockBorderWrapper`) may change in a Streamlit upgrade.
 5. **Run:** `uv run ruff check .` and `uv run pytest tests/test_ui_outline.py`.
 
+### Fix after review
+
+Found in review after the merge: while the API was down, every click in the UI froze for 3 to 5 seconds, and the 6 UI
+tests took about 3.5 minutes (the whole offline suite went from 16 seconds to 3.6 minutes).
+
+- **Cause:** Streamlit re-runs the whole script on every click, and the sidebar called `/health` each time with a
+  3-second timeout. On Windows a refused connection is retried, and `localhost` tries IPv6 and then IPv4, so a
+  down API took 3 to 5 seconds to fail (measured: 4.99 s on `localhost`, 3.07 s on `127.0.0.1`).
+- **Fix:**
+  - Mock mode no longer checks the API, because it never uses it.
+  - Otherwise the check (`api_provider()`) is cached for 30 seconds with `st.cache_data` and gives up after 1 second.
+  - The mock delay is 0.3 seconds instead of 1 (`MOCK_DELAY`).
+- **Guard:** `test_mock_mode_never_calls_the_api` fails if mock mode touches the network. It fails on the old code.
+- **Result:** the 7 UI tests run in about 10 seconds, about 1 second each.
+
 ### Open items for T10
 
-- [ ] Commit, push, open the PR, assign Rishabh as reviewer.
-- [ ] Agree the endpoint paths and JSON with Deepanshu (T24) and Rishabh (T11).
+- [x] Commit, push, open the PR, assign Rishabh as reviewer. Merged as PR #9.
+- [x] Fix the slow clicks while the API is down (see "Fix after review" below).
+- [ ] Agree the endpoint paths and JSON with Deepanshu (T24) and Rishabh (T11). The approved outline sends only
+  `id`, `title` and `subtopics`, so the backend must write search queries for new and edited sections.
+- [ ] Switch the `UI_USE_MOCK` default to `0` once the real routes exist, so the UI cannot show fake data by mistake.
 - [ ] Decide how the UI learns the report is ready (polling or a status endpoint). Needed for T15.
 - [ ] Try it with `UI_USE_MOCK=0` once T11 and T24 are merged.
 - [ ] Update the tracker row for T10 after the merge.
@@ -189,3 +207,5 @@ a switch to turn the verifier off (ask Rishabh).
 | 26-11-26 | T10 | Branch created; mock API client, three screens and 6 tests written |
 | 26-11-26 | T10 | Visual design added (CSS theme, step tracker, animations) |
 | 26-11-26 | Docs | This work log created |
+| 26-11-26 | T10 | Merged as PR #9 |
+| 26-11-26 | T10 | Review fix (Rishabh): no health check in mock mode, cached 1-second check otherwise, mock delay 0.3 s |
