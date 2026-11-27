@@ -7,6 +7,8 @@ from app.agents.research.nodes import planner as planner_module
 from app.agents.research.nodes.planner import (
     MAX_QUERIES,
     MAX_SECTIONS,
+    MAX_SUBTOPIC_CHARS,
+    MAX_TITLE_CHARS,
     Outline,
     PlannerError,
     SectionPlan,
@@ -171,3 +173,39 @@ def test_planner_node_in_a_real_graph_with_checkpointer(monkeypatch):
     assert [s["title"] for s in ordered_sections(saved)] == ["Market", "Policy", "Outlook"]
     assert saved["outline_approved"] is False
     assert saved["metrics"]["llm_calls"] == 0  # the fake is not a chat model; real calls are counted by track_usage
+
+
+# ---- review round 1: the planner must respect the approval limits ----
+
+
+def test_clean_outline_limits_title_and_subtopic_length_at_a_word_boundary():
+    long_title = "Market size " + "and long winded growth narrative " * 8
+    long_subtopic = "Total sales volume " + "across every region " * 15
+    raw = Outline(sections=[section(long_title, subtopics=(long_subtopic, "short"))])
+
+    cleaned = clean_outline(raw, "EVs").sections[0]
+
+    assert len(cleaned.title) <= MAX_TITLE_CHARS and cleaned.title.startswith("Market size and long")
+    assert not cleaned.title.endswith(" ") and cleaned.title.split()[-1] in long_title.split()  # no cut-off word
+    assert len(cleaned.subtopics[0]) <= MAX_SUBTOPIC_CHARS and cleaned.subtopics[1] == "short"
+
+
+def test_clean_outline_leaves_text_within_the_limits_alone():
+    exact = "t" * MAX_TITLE_CHARS
+
+    cleaned = clean_outline(Outline(sections=[section(exact, subtopics=("s" * MAX_SUBTOPIC_CHARS,))]), "EVs")
+
+    assert cleaned.sections[0].title == exact and len(cleaned.sections[0].subtopics[0]) == MAX_SUBTOPIC_CHARS
+
+
+def test_a_word_longer_than_the_limit_is_cut_hard():
+    cleaned = clean_outline(Outline(sections=[section("x" * 500)]), "EVs")
+
+    assert cleaned.sections[0].title == "x" * MAX_TITLE_CHARS
+
+
+def test_a_shortened_title_still_counts_as_a_repeat_of_the_same_title():
+    base = "A" * 119 + " "
+    raw = Outline(sections=[section(base + "first part"), section(base + "second part")])
+
+    assert len(clean_outline(raw, "EVs").sections) == 1  # both shorten to the same 119 characters
