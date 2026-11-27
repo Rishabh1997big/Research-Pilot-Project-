@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 MIN_SECTIONS = 3
 MAX_SECTIONS = 6
 MAX_SUBTOPICS = 4
+MAX_TITLE_CHARS = 120  # also the limit the outline approval accepts (nodes/approval.py)
+MAX_SUBTOPIC_CHARS = 200
 MAX_QUERIES = 3  # per section; at most MAX_SECTIONS * MAX_QUERIES web searches per report
 ATTEMPTS = 2  # ask again once if the outline has too few usable sections
 
@@ -105,16 +107,17 @@ def plan_outline(topic: str, llm: Runnable | None = None) -> Outline:
 
 
 def clean_outline(outline: Outline, topic: str) -> Outline:
-    """Strip blanks, drop repeated and non-researchable sections, cap the counts, and make sure every section has
-    at least one search query."""
+    """Strip blanks, drop repeated and non-researchable sections, cap the counts and the length of titles and
+    subtopics (the outline approval rejects longer ones), and make sure every section has at least one search
+    query."""
     sections: list[SectionPlan] = []
     seen_titles: set[str] = set()
     for plan in outline.sections:
-        title = _tidy(plan.title)
+        title = _shorten(_tidy(plan.title), MAX_TITLE_CHARS)
         if not title or NOT_RESEARCHABLE.match(title) or title.lower() in seen_titles:
             continue
         seen_titles.add(title.lower())
-        subtopics = _unique(plan.subtopics)[:MAX_SUBTOPICS]
+        subtopics = [_shorten(sub, MAX_SUBTOPIC_CHARS) for sub in _unique(plan.subtopics)[:MAX_SUBTOPICS]]
         raw_queries = plan.queries if YEAR.search(topic) else [YEAR.sub(" ", q) for q in plan.queries]
         queries = _unique(raw_queries)[:MAX_QUERIES] or [f"{topic} {title}"]
         sections.append(SectionPlan(title=title, subtopics=subtopics, queries=queries))
@@ -136,6 +139,16 @@ def outline_to_state(outline: Outline, state: ResearchState) -> dict:
         sections[section_id] = new_section(section_id, plan.title, plan.subtopics, plan.queries)
         order.append(section_id)
     return {"sections": sections, "section_order": order, "sections_to_run": order, "outline_approved": False}
+
+
+def _shorten(text: str, limit: int) -> str:
+    """`text` cut to at most `limit` characters, at a word boundary when there is one."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    if text[limit] != " " and " " in cut:
+        cut = cut[: cut.rindex(" ")]
+    return cut.rstrip(" ,;:-–—/")
 
 
 def _unique(items: list[str]) -> list[str]:

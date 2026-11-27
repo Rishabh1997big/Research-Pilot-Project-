@@ -18,25 +18,32 @@ The API (T24) must always send a non-empty dict.
 
 What approving does to the state: edited sections keep everything the planner gave them except what the user changed;
 a new or retitled section gets new search queries made from its title and subtopics (no LLM call, so approval is
-instant and free); `section_order` and `sections_to_run` follow the approved list; `outline_approved` becomes True.
+instant and free; a heading that differs only in capitalisation is not retitled); a subtopic the user removes takes
+its searches with it; a subtopic the user adds gets one. `section_order` and `sections_to_run` follow the approved
+list, and `outline_approved` becomes True.
 
 If the resume value is not valid (no sections, an unknown ID, a repeated title...), the node does not fail. It pauses
 again with the same outline plus an "error" message for the user, and waits for a corrected outline. (Raising instead
 would not work: LangGraph stores the bad resume value and replays it on every later resume.)
 """
 
+import re
 from collections import Counter
 from typing import Annotated, Any
 
 from langgraph.types import interrupt
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator
 
-from app.agents.research.nodes.planner import MAX_QUERIES, MAX_SECTIONS, NOT_RESEARCHABLE
+from app.agents.research.nodes.planner import (
+    MAX_QUERIES,
+    MAX_SECTIONS,
+    MAX_SUBTOPIC_CHARS,
+    MAX_TITLE_CHARS,
+    NOT_RESEARCHABLE,
+)
 from app.agents.research.state import SECTION_ID_PREFIX, ResearchState, Section, new_section, next_id
 
-MAX_TITLE_CHARS = 120
-MAX_SUBTOPICS = 10
-MAX_SUBTOPIC_CHARS = 200
+MAX_SUBTOPICS = 10  # per section the user edits (the planner writes at most 4)
 
 Title = Annotated[str, StringConstraints(max_length=MAX_TITLE_CHARS)]
 Subtopic = Annotated[str, StringConstraints(max_length=MAX_SUBTOPIC_CHARS)]
@@ -134,23 +141,32 @@ def apply_approval(state: ResearchState, resume_value: Any) -> dict:
 
 def _entries(state: ResearchState, resume_value: Any) -> list[ApprovedSection]:
     """The approved sections, in report order. Only None (or sections: None) means "as proposed"; any other value
-    that is not a valid outline, even an empty list or string, is an error and never approves by accident."""
+    that is not a valid outline, even an empty list or string, is an error and never approves by accident.
+
+    "As proposed" goes through the same validation as an edited outline, so a proposed outline that breaks a rule
+    is an OutlineError (the run asks again) and never an unhandled exception.
+    """
+    approved = _parse({} if resume_value is None else resume_value, "The approved outline")
+    if approved.sections is None:
+        current = state.get("sections", {})
+        proposed = [
+            {"id": sid, "title": current[sid]["title"], "subtopics": current[sid]["subtopics"]}
+            for sid in state.get("section_order", [])
+            if sid in current
+        ]
+        approved = _parse({"sections": proposed}, "The proposed outline cannot be approved as it is: it")
+    return [s for s in approved.sections or [] if s.title.strip()]  # a section with no title is dropped
+
+
+def _parse(raw: Any, subject: str) -> ApprovedOutline:
     try:
-        approved = ApprovedOutline.model_validate({} if resume_value is None else resume_value)
+        return ApprovedOutline.model_validate(raw)
     except ValidationError as exc:
         error = exc.errors()[0]
         where = " > ".join(str(part) for part in error["loc"])
-        raise OutlineError(f"The approved outline is not valid ({where}: {error['msg']}).") from exc
-
-    if approved.sections is not None:
-        return [s for s in approved.sections if s.title.strip()]  # a section with no title is dropped
-
-    current = state.get("sections", {})
-    return [
-        ApprovedSection(id=sid, title=current[sid]["title"], subtopics=current[sid]["subtopics"])
-        for sid in state.get("section_order", [])
-        if sid in current
-    ]
+        raise OutlineError(
+            f"{subject} is not valid ({where}: {error['msg']}). Edit the outline and approve again."
+        ) from exc
 
 
 def _check(entries: list[ApprovedSection], current: dict[str, Section]) -> None:
@@ -181,13 +197,63 @@ def _check(entries: list[ApprovedSection], current: dict[str, Section]) -> None:
 
 
 def _section_queries(topic: str, old: Section, title: str, subtopics: list[str]) -> list[str]:
-    """Queries for a section that was already in the outline. A new heading means new searches; the same heading
-    keeps its searches and gets one more for each subtopic the user added."""
-    if title != _tidy(old["title"]):
+    """Queries for a section that was already in the outline.
+
+    - A different heading (not just different capitalisation) means new searches.
+    - A removed subtopic takes its searches with it (see _is_about). If that leaves none, the section gets fresh ones.
+    - Everything else the planner wrote is kept, and each subtopic the user added gets one more search.
+    """
+    old_title = _tidy(old["title"])
+    if title.lower() != old_title.lower():
+        return _queries(topic, title, subtopics, keep=[])
+    kept = {s.lower() for s in subtopics}
+    removed = [s for s in old["subtopics"] if s.lower() not in kept]
+    queries = [q for q in old["queries"] if not _is_about(q, removed, subtopics, topic, old_title)]
+    if not queries:
         return _queries(topic, title, subtopics, keep=[])
     known = {s.lower() for s in old["subtopics"]}
     added = [s for s in subtopics if s.lower() not in known]
-    return _queries(topic, title, added, keep=old["queries"]) if added else list(old["queries"])
+    return _queries(topic, title, added, keep=queries) if added else queries
+
+
+SUBTOPIC_MATCH = 0.6  # share of a subtopic's content words a query must contain to count as written for it
+STOP_WORDS = frozenset("the and for with from into over across that this are how what its their per vs".split())
+
+
+def _singular(word: str) -> str:
+    """A cheap singular form, so "warranties" matches "warranty" and "scooters" matches "scooter"."""
+    if len(word) > 4 and word.endswith("ies"):
+        return word[:-3] + "y"
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
+def _words(text: str) -> set[str]:
+    """Content words of a text: lower case, singular, without stop words or tiny words."""
+    found = (_singular(w) for w in re.findall(r"\w+", text.lower()))
+    return {w for w in found if len(w) > 2 and w not in STOP_WORDS}
+
+
+def _share(query_words: set[str], subtopic: str) -> float:
+    """How much of a subtopic's content words the query contains (0 to 1; 0 if the subtopic has none)."""
+    words = _words(subtopic)
+    return len(words & query_words) / len(words) if words else 0.0
+
+
+def _is_about(query: str, removed: list[str], kept: list[str], topic: str, title: str) -> bool:
+    """Was this search written for one of the removed subtopics? Two signs:
+    - it is exactly what approval writes for a subtopic ("<topic> <title> <subtopic>"), or
+    - it holds most of the words of a removed subtopic (SUBTOPIC_MATCH), and more of them than of any subtopic that
+      stays.
+    A planner query that fits no single subtopic is broad and is kept."""
+    lowered = query.lower()
+    if any(lowered == _tidy(f"{topic} {title} {sub}").lower() for sub in removed):
+        return True
+    words = _words(query)
+    removed_share = max((_share(words, sub) for sub in removed), default=0.0)
+    kept_share = max((_share(words, sub) for sub in kept), default=0.0)
+    return removed_share >= SUBTOPIC_MATCH and removed_share > kept_share
 
 
 def _queries(topic: str, title: str, subtopics: list[str], keep: list[str]) -> list[str]:

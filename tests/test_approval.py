@@ -432,3 +432,177 @@ def test_two_runs_on_one_saver_do_not_mix(fake_pipeline):
         assert graph.get_state(two).next == ("approve_outline",)  # run two is still waiting, untouched
         assert len(graph.get_state(two).values["section_order"]) == 3
         assert graph.get_state(two).values["topic"] == "Topic two"
+
+
+# ---- review round 1: approving what the planner wrote ----
+
+
+def long_planned_state(title_len=150, subtopic_len=250):
+    state = planned_state()
+    state["sections"]["sec-1"]["title"] = "T" * title_len
+    state["sections"]["sec-2"]["subtopics"] = ["S" * subtopic_len, "fine"]
+    return state
+
+
+def test_approving_as_proposed_with_an_overlong_planner_title_is_a_normal_error_not_a_crash():
+    """Regression: this raised pydantic's ValidationError, and a paused run could then never be resumed."""
+    with pytest.raises(OutlineError, match="title"):
+        apply_approval(long_planned_state(subtopic_len=10), {"sections": None})
+    with pytest.raises(OutlineError, match="subtopics"):
+        apply_approval(long_planned_state(title_len=10), {"sections": None})
+
+
+def test_a_run_whose_outline_is_too_long_can_still_be_fixed_and_resumed(fake_pipeline):
+    """The blocker end to end: approve as proposed on an overlong outline, then correct it."""
+    state = long_planned_state(title_len=150, subtopic_len=10)
+    with open_checkpointer(":memory:") as saver:
+        graph = graph_module.build_research_graph(saver)
+        graph.invoke(initial_state(TOPIC), CONFIG)
+        graph.update_state(CONFIG, {"sections": state["sections"]})  # as if the planner had written long text
+
+        graph.invoke(Command(resume={"sections": None}), CONFIG)  # no exception
+        asked = graph.get_state(CONFIG).tasks[0].interrupts[-1].value
+        assert "title" in asked["error"]
+
+        fixed = {
+            "sections": [keep("sec-1", "Short title", "scooter sales"), keep("sec-2", "Subsidy and policy", "subsidy")]
+        }
+        graph.invoke(Command(resume=fixed), CONFIG)
+
+        final = graph.get_state(CONFIG)
+        assert final.next == () and final.values["section_order"] == ["sec-1", "sec-2"]
+
+
+# ---- review round 1: removed subtopics and capitalisation ----
+
+
+def with_queries(*queries, subtopics=("scooter sales", "growth rate", "export figures")):
+    state = planned_state()
+    state["sections"]["sec-1"].update(queries=list(queries), subtopics=list(subtopics), title="Sales and growth")
+    return state
+
+
+def approve_sec1(state, *subtopics, title="Sales and growth"):
+    update = apply_approval(state, {"sections": [keep("sec-1", title, *subtopics)]})
+    return update["sections"]["sec-1"]["queries"]
+
+
+def test_removing_a_subtopic_removes_the_search_that_was_written_for_it():
+    generated = f"{TOPIC} Sales and growth export figures"  # the form approval writes for a subtopic
+    state = with_queries("scooter market overview", generated)
+
+    queries = approve_sec1(state, "scooter sales", "growth rate")  # "export figures" removed
+
+    assert generated not in queries
+    assert "scooter market overview" in queries  # a broad query is kept
+
+
+def test_a_planner_query_that_matches_only_the_removed_subtopic_is_removed_too():
+    state = with_queries("electric scooter export figures India", "scooter sales volume India")
+
+    queries = approve_sec1(state, "scooter sales", "growth rate")
+
+    assert queries == ["scooter sales volume India"]
+
+
+def test_a_query_that_also_fits_a_kept_subtopic_stays():
+    state = with_queries("scooter sales and export figures", subtopics=("scooter sales", "export figures"))
+
+    assert approve_sec1(state, "scooter sales") == ["scooter sales and export figures"]
+
+
+def test_if_every_query_belonged_to_removed_subtopics_the_section_gets_fresh_ones():
+    state = with_queries(f"{TOPIC} Sales and growth export figures", subtopics=("export figures", "growth rate"))
+
+    queries = approve_sec1(state, "growth rate")
+
+    assert queries == [f"{TOPIC} Sales and growth growth rate"]
+
+
+def test_removing_all_subtopics_leaves_a_title_search():
+    state = with_queries(f"{TOPIC} Sales and growth export figures", subtopics=("export figures",))
+
+    assert approve_sec1(state) == [f"{TOPIC} Sales and growth"]
+
+
+def test_a_capitalisation_only_title_change_keeps_the_planner_queries_and_stores_the_new_title():
+    state = planned_state()
+
+    update = apply_approval(
+        state,
+        {
+            "sections": [
+                keep("sec-1", "SALES AND GROWTH", "scooter sales", "growth rate"),
+                keep("sec-2", "SUBSIDY AND POLICY", "subsidy"),
+            ]
+        },
+    )
+
+    assert update["sections"]["sec-1"]["title"] == "SALES AND GROWTH"
+    assert update["sections"]["sec-1"]["queries"] == ["sales q1", "sales q2"]
+
+
+def test_a_planner_that_writes_very_long_text_can_be_approved_as_proposed_end_to_end(monkeypatch):
+    """The whole chain behind the blocker: planner output with 300-character titles and 500-character subtopics goes
+    through the planner's cleaning and is approved as proposed, with no error at all."""
+    wordy = Outline(
+        sections=[
+            SectionPlan(
+                title=f"Section {n} " + "with a very long winded heading " * 10,
+                subtopics=["A subtopic that goes on and on " * 16, "short one"],
+                queries=["q1", "q2"],
+            )
+            for n in range(3)
+        ]
+    )
+    monkeypatch.setattr(planner_module, "get_structured_llm", lambda schema: RunnableLambda(lambda _: wordy))
+    monkeypatch.setattr(sources, "search_queries", lambda queries, max_results: SearchBatch(results=[], search_calls=1))
+    monkeypatch.setattr(sources, "read_pages", lambda urls: {})
+
+    with open_checkpointer(":memory:") as saver:
+        graph = graph_module.build_research_graph(saver)
+        graph.invoke(initial_state(TOPIC), CONFIG)
+        shown = graph.get_state(CONFIG).tasks[0].interrupts[-1].value["sections"]
+        assert all(len(s["title"]) <= 120 for s in shown)
+        assert all(len(sub) <= 200 for s in shown for sub in s["subtopics"])
+
+        graph.invoke(Command(resume={"sections": None}), CONFIG)
+
+        final = graph.get_state(CONFIG)
+        assert final.next == () and final.values["outline_approved"] is True
+
+
+def test_removing_a_subtopic_with_no_content_words_still_removes_the_search_written_for_it():
+    state = with_queries(f"{TOPIC} Sales and growth AI", "scooter market overview", subtopics=("scooter sales", "AI"))
+
+    queries = approve_sec1(state, "scooter sales")
+
+    assert queries == ["scooter market overview"]
+
+
+def test_plural_and_singular_count_as_the_same_word_when_matching_queries_to_subtopics():
+    state = with_queries(
+        "battery warranties explained", "scooter market overview", subtopics=("battery warranty", "sales")
+    )
+
+    queries = approve_sec1(state, "sales")  # "battery warranty" removed
+
+    assert queries == ["scooter market overview"]
+
+
+def test_a_removed_and_a_reworded_subtopic_both_update_the_searches():
+    state = with_queries(
+        f"{TOPIC} Sales and growth export figures",
+        "scooter market overview",
+        subtopics=("export figures", "growth rate"),
+    )
+
+    queries = approve_sec1(state, "growth rate", "regional demand")  # one removed, one added
+
+    assert queries == ["scooter market overview", f"{TOPIC} Sales and growth regional demand"]
+
+
+def test_unchanged_subtopics_keep_every_query_even_ones_that_mention_them():
+    state = with_queries("scooter sales volume", "growth rate by year", subtopics=("scooter sales", "growth rate"))
+
+    assert approve_sec1(state, "scooter sales", "growth rate") == ["scooter sales volume", "growth rate by year"]

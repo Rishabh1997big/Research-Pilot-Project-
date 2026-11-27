@@ -13,6 +13,12 @@ A run that pauses for outline approval has to survive the API process restarting
 
 Open it once when the API starts and keep it open (for example in FastAPI's lifespan), not once per request: the saver
 holds one SQLite connection and a lock, and a graph built from it can be shared by every request.
+
+This saver is synchronous only. Write the API endpoints that touch the graph as plain `def` (FastAPI runs them in a
+thread pool, and the saver's lock makes that safe). Do NOT use it from `async def` endpoints:
+- `graph.ainvoke`, `astream` and `aget_state` raise NotImplementedError with this saver (checked), and
+- a blocking `graph.invoke` inside an `async def` works but freezes the whole server while a run is going.
+If the API has to be async, use `AsyncSqliteSaver` (langgraph.checkpoint.sqlite.aio) with `ainvoke` throughout instead.
 """
 
 from collections.abc import Iterator

@@ -115,11 +115,29 @@ A second file of nasty inputs. The rule it checks: whatever is sent, approval ei
 **Do the tests really catch bugs?** Three deliberate breakages were tried and each was caught: falsy garbage approving,
 reused section IDs, and duplicate titles allowed. The code was restored afterwards.
 
+### Review round 1: the reviewer's findings and what was done
+
+A reviewer ran the PR and found one blocker and three smaller problems. Each was reproduced as a failing test first, then
+fixed.
+
+| Finding | Cause | Fix |
+|---|---|---|
+| **Blocker.** "Approve as proposed" crashed when the planner wrote a title over 120 or a subtopic over 200 characters, and the run could then never be resumed. | The as-proposed path built its sections outside the error handling, so pydantic's `ValidationError` escaped. LangGraph stored the bad resume value and replayed it on every later resume. The planner capped how many sections and subtopics it wrote, but not how long they were. | Both ends. (1) The planner's `clean_outline` now shortens titles to 120 and subtopics to 200 characters at a word boundary, so the planner can no longer produce an outline that breaks the approval rules (`MAX_TITLE_CHARS` and `MAX_SUBTOPIC_CHARS` live in `planner.py`; approval imports them). (2) "As proposed" now goes through the same validated path as an edited outline, so a proposed outline that still breaks a rule gives a normal `OutlineError` and the run asks again. |
+| Removing a subtopic did not remove its search. | Old queries were kept whatever the user removed. | A query is dropped when it is exactly what approval writes for the removed subtopic, or when it holds most (60%) of the removed subtopic's words and more of them than any subtopic that stays. Broad planner queries are kept. If every query goes, the section gets fresh ones. |
+| A capitalisation-only title change threw away the planner's queries. | The old and new titles were compared exactly. | Titles are compared ignoring case. The new capitalisation is stored and the queries are kept. |
+| `checkpoint.py` did not say the saver is not async. | Missing note. | The docstring now says: use plain `def` endpoints; `ainvoke`, `astream` and `aget_state` raise `NotImplementedError` with this saver (checked); a blocking `invoke` inside `async def` freezes the server; use `AsyncSqliteSaver` if the API must be async. |
+
+Also checked with the real planner: two real topics, approved as proposed, ran to the end with 29 and 27 real sources.
+
+Limit to know about: which planner query belongs to which subtopic is a guess based on shared words. The planner writes 2 or 3
+broad queries per section, not one per subtopic, so a query that fits no single subtopic is always kept. The guess only ever
+removes a query that clearly fits a removed subtopic better than any remaining one.
+
 ### What this means for the other tasks
 
 | Who | What they need to know |
 |---|---|
-| T24 API (Deepanshu) | Keep one saver open for the whole API lifetime. Start: `invoke(initial_state)` with `thread_id = run_id`; read the outline from `get_state(config).tasks[0].interrupts[-1].value`. Approve: `invoke(Command(resume=<non-empty dict>))`. |
+| T24 API (Deepanshu) | Keep one saver open for the whole API lifetime, and write the graph endpoints as plain `def` (not `async def`). Start: `invoke(initial_state)` with `thread_id = run_id`; read the outline from `get_state(config).tasks[0].interrupts[-1].value`. Approve: `invoke(Command(resume=<non-empty dict>))`. |
 | T10 UI | Send `{"sections": [...]}`; if the response outline has an `error`, show it and let the user fix the outline. |
 | T21 change requests | The same checkpointer and `thread_id` can be reused to resume work on one section. |
 
