@@ -259,7 +259,7 @@ def _cache_put(query: str, max_results: int, results: list[SearchResult], cfg: S
     path = _cache_file(query, max_results, cfg)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
+        tmp = path.with_suffix(f".{threading.get_ident()}.tmp")  # one per thread: sections search in parallel
         tmp.write_text(json.dumps({"query": query, "results": results}, ensure_ascii=False), encoding="utf-8")
         tmp.replace(path)
     except OSError as exc:

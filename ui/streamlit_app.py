@@ -60,6 +60,25 @@ def to_outline(sections: list[dict]) -> list[dict]:
     return outline
 
 
+# ---------- API status ----------
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def api_provider() -> str | None:
+    """The API's LLM provider, or None when the API is down.
+
+    Streamlit re-runs this script on every click. Unchecked, a down API made every click wait 3 to 5 seconds on
+    Windows (a refused connection is retried, and `localhost` tries IPv6 and then IPv4). So the answer is kept for
+    30 seconds and the check gives up after 1 second.
+    """
+    try:
+        response = httpx.get(f"{settings.api_base_url}/health", timeout=1)
+        response.raise_for_status()
+        return response.json()["llm_provider"]
+    except (httpx.HTTPError, ValueError, KeyError):
+        return None
+
+
 # ---------- screens ----------
 
 
@@ -67,15 +86,13 @@ def sidebar() -> None:
     with st.sidebar:
         st.markdown('<div class="brand">🧭 ResearchPilot</div>', unsafe_allow_html=True)
         st.caption("Your AI research analyst")
-        try:
-            response = httpx.get(f"{settings.api_base_url}/health", timeout=3)
-            response.raise_for_status()
-            st.success(f"API running ({response.json()['llm_provider']})")
-        except httpx.HTTPError:
-            label = "mock data is used" if api_client.USE_MOCK else "start it: uv run uvicorn app.api.main:app --reload"
-            st.warning(f"API not reachable; {label}")
+        # Mock mode never calls the API, so it does not check it either
         if api_client.USE_MOCK:
-            st.info("Mock mode (UI_USE_MOCK=1)")
+            st.info("Mock mode (UI_USE_MOCK=1): fake data, no API needed")
+        elif provider := api_provider():
+            st.success(f"API running ({provider})")
+        else:
+            st.warning("API not reachable; start it: uv run uvicorn app.api.main:app --reload")
         if st.session_state.page != "topic":
             st.button("Start a new topic", on_click=reset)
 
